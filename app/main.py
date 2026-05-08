@@ -3,8 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
 from app.stocks import fetch_stock_prices
 from app.storage import save_to_s3
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
+import boto3
+import json
+from app.config import AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_BUCKET_NAME, AWS_REGION
 
 app = FastAPI(title="Stock Price Pipeline")
 
@@ -67,3 +70,67 @@ def trigger_pipeline():
         filename = save_to_s3(stock_data)
         return {"status": "success", "data": stock_data, "saved_to": filename}
     return {"status": "error", "message": "Failed to fetch stock data"}
+
+@app.get("/history")
+def get_history():
+    TICKERS = ["NVDA", "AAPL", "MSFT", "VOO", "AMZN"]
+    try:
+        s3 = boto3.client(
+            "s3",
+            aws_access_key_id=AWS_ACCESS_KEY_ID,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+            region_name=AWS_REGION,
+        )
+        cutoff = datetime.utcnow() - timedelta(days=7)
+        paginator = s3.get_paginator("list_objects_v2")
+        pages = paginator.paginate(Bucket=AWS_BUCKET_NAME, Prefix="stock-prices/")
+
+        entries = []
+        for page in pages:
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                # key: stock-prices/YYYY/MM/DD/HH-MM-SS.json
+                trimmed = key.removeprefix("stock-prices/").removesuffix(".json")
+                parts = trimmed.split("/")
+                if len(parts) != 4:
+                    continue
+                try:
+                    year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
+                    t = parts[3].split("-")
+                    hour, minute = int(t[0]), int(t[1])
+                    file_dt = datetime(year, month, day, hour, minute)
+                except Exception:
+                    continue
+                if file_dt >= cutoff:
+                    entries.append((file_dt, key))
+
+        entries.sort(key=lambda x: x[0])
+
+        results = []
+        for file_dt, key in entries:
+            try:
+                response = s3.get_object(Bucket=AWS_BUCKET_NAME, Key=key)
+                data = json.loads(response["Body"].read())
+                stocks = (data or {}).get("stocks") or {}
+                entry = {"time": file_dt.strftime("%m/%d %H:%M")}
+                for ticker in TICKERS:
+                    t = stocks.get(ticker) or {}
+                    raw_change = t.get("change_percent", None)
+                    try:
+                        change = round(float(raw_change), 2) if raw_change is not None else None
+                    except Exception:
+                        change = None
+                    entry[ticker] = {
+                        "price": t.get("price_usd", None),
+                        "change_percent": change,
+                        "volume": t.get("volume", None),
+                        "high": t.get("high_usd", None),
+                        "low": t.get("low_usd", None),
+                    }
+                results.append(entry)
+            except Exception:
+                continue
+
+        return {"status": "success", "data": results}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
