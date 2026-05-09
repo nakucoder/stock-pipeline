@@ -10,6 +10,14 @@ An automated data pipeline that fetches real-time stock prices for NVDA, AAPL, M
 - Automatically saves data to AWS S3 every 60 minutes
 - Organized by date: stock-prices/YYYY/MM/DD/HH-MM-SS.json
 
+## Data Storage
+
+- Data is saved to S3 every 60 minutes automatically during market hours (Mon–Fri, 9:30 AM – 4 PM EST)
+- Scheduler runs every 4 hours during market hours only to stay within Alpha Vantage's 25 calls/day free limit
+- S3 path structure: stock-prices/YYYY/MM/DD/HH-MM-SS.json
+- Each file contains price, open, high, low, change, change percent, volume, previous close, and latest trading day for all 5 tickers
+- The /history endpoint reads the last 7 days of S3 files and returns them as a JSON array sorted oldest to newest
+
 ## Tech Stack
 
 - FastAPI — REST API framework
@@ -17,6 +25,13 @@ An automated data pipeline that fetches real-time stock prices for NVDA, AAPL, M
 - AWS S3 — cloud storage for all pipeline data
 - APScheduler — automated scheduling every 60 minutes
 - Alpha Vantage API — free stock market data
+
+## API Limits
+
+- Alpha Vantage free tier: 25 API calls per day
+- Each pipeline run makes 5 calls (one per stock)
+- Scheduler is limited to market hours and runs every 4 hours to stay within the limit
+- Dashboard shows cached data on weekends with a "Market Closed" banner
 
 ## API Endpoints
 
@@ -26,12 +41,13 @@ An automated data pipeline that fetches real-time stock prices for NVDA, AAPL, M
 | GET /health | Health check for monitoring |
 | GET /prices | Get current stock prices |
 | GET /run | Trigger pipeline and save to S3 |
+| GET /history | Get last 7 days of stock prices from S3 |
 
 ## How to run it
 
 1. Clone the repo
 2. Create a .env file with your AWS and Alpha Vantage credentials
-3. Run: docker build -t stock-pipeline . && docker run -p 8002:8000 --env-file .env stock-pipeline
+3. Run: `docker-compose up -d`
 4. Test: open http://localhost:8002/prices in your browser
 
 ## Author
