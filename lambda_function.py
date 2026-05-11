@@ -75,13 +75,20 @@ def save_to_s3(data, bucket):
 
 def read_latest_from_s3(bucket):
     s3 = boto3.client("s3")
-    response = s3.list_objects_v2(Bucket=bucket, Prefix="stock-prices/")
-    objects = [o for o in response.get("Contents", []) if o["Key"] != HISTORY_KEY]
+    paginator = s3.get_paginator("list_objects_v2")
+    objects = []
+    for page in paginator.paginate(Bucket=bucket, Prefix="stock-prices/"):
+        for obj in page.get("Contents", []):
+            if obj["Key"] != HISTORY_KEY:
+                objects.append(obj)
     if not objects:
         return None
-    latest = sorted(objects, key=lambda o: o["LastModified"], reverse=True)[0]
-    obj = s3.get_object(Bucket=bucket, Key=latest["Key"])
-    return json.loads(obj["Body"].read().decode("utf-8"))
+    for item in sorted(objects, key=lambda o: o["LastModified"], reverse=True):
+        obj = s3.get_object(Bucket=bucket, Key=item["Key"])
+        data = json.loads(obj["Body"].read().decode("utf-8"))
+        if data.get("stocks") and len(data["stocks"]) >= 5:
+            return data
+    return None
 
 
 def read_history_from_s3(bucket):
@@ -129,47 +136,56 @@ def append_to_history(bucket, stock_data):
     )
 
 
+def handle_api_gateway(event, bucket):
+    path = event.get("path") or event.get("rawPath") or ""
+    if path == "/stocks/history":
+        data = read_history_from_s3(bucket)
+        return {
+            "statusCode": 200,
+            "headers": CORS_HEADERS,
+            "body": json.dumps({"status": "success", "data": data}),
+        }
+
+    cached = read_latest_from_s3(bucket)
+    if cached is None:
+        return {
+            "statusCode": 200,
+            "headers": CORS_HEADERS,
+            "body": json.dumps({"market_closed": True, "stocks": {}}),
+        }
+    if not is_market_open():
+        cached["market_closed"] = True
+    return {
+        "statusCode": 200,
+        "headers": CORS_HEADERS,
+        "body": json.dumps(cached),
+    }
+
+
+def handle_eventbridge(api_key, bucket):
+    if not is_market_open():
+        print("Market is closed, skipping fetch.")
+        return {"market_closed": True}
+
+    stock_data = fetch_stock_prices(api_key)
+    s3_key = save_to_s3(stock_data, bucket)
+    print(f"Saved to s3://{bucket}/{s3_key}")
+
+    append_to_history(bucket, stock_data)
+    print(f"Updated history at s3://{bucket}/{HISTORY_KEY}")
+
+    return stock_data
+
+
 def handler(event, context):
     try:
         api_key = os.environ["ALPHA_VANTAGE_API_KEY"]
         bucket = os.environ["AWS_BUCKET_NAME"]
 
-        path = event.get("path") or event.get("rawPath") or ""
-        if path == "/stocks/history":
-            data = read_history_from_s3(bucket)
-            return {
-                "statusCode": 200,
-                "headers": CORS_HEADERS,
-                "body": json.dumps({"status": "success", "data": data}),
-            }
+        if "path" in event or "rawPath" in event:
+            return handle_api_gateway(event, bucket)
 
-        if not is_market_open():
-            cached = read_latest_from_s3(bucket)
-            if cached is None:
-                return {
-                    "statusCode": 200,
-                    "headers": CORS_HEADERS,
-                    "body": json.dumps({"market_closed": True, "stocks": {}}),
-                }
-            cached["market_closed"] = True
-            return {
-                "statusCode": 200,
-                "headers": CORS_HEADERS,
-                "body": json.dumps(cached),
-            }
-
-        stock_data = fetch_stock_prices(api_key)
-        s3_key = save_to_s3(stock_data, bucket)
-        print(f"Saved to s3://{bucket}/{s3_key}")
-
-        append_to_history(bucket, stock_data)
-        print(f"Updated history at s3://{bucket}/{HISTORY_KEY}")
-
-        return {
-            "statusCode": 200,
-            "headers": CORS_HEADERS,
-            "body": json.dumps(stock_data),
-        }
+        return handle_eventbridge(api_key, bucket)
     except Exception as e:
         print(f"Error: {e}")
         return {
