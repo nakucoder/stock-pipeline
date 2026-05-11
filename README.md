@@ -33,6 +33,10 @@ An automated data pipeline that fetches real-time stock prices for NVDA, AAPL, M
 - Scheduler is limited to market hours and runs every 4 hours to stay within the limit
 - Dashboard shows cached data on weekends with a "Market Closed" banner
 
+## Lambda Migration
+
+API Gateway calls always serve from S3 cache instantly — no Alpha Vantage requests are made on dashboard loads. Alpha Vantage is only called when EventBridge triggers the Lambda on schedule (Mon-Fri 9:30 AM and 1:30 PM EST). This eliminates API Gateway timeouts and stays well within the 25 calls/day free tier limit.
+
 ## API Endpoints
 
 | Endpoint | Description |
