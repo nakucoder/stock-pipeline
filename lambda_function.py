@@ -42,6 +42,7 @@ def fetch_stock_prices(api_key):
                 "symbol": symbol,
                 "apikey": api_key,
             },
+            timeout=15,
         )
         response.raise_for_status()
         quote = response.json().get("Global Quote", {})
